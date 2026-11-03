@@ -45,6 +45,18 @@ export type EventMember = {
   profile: Pick<Profile, "id" | "full_name" | "avatar_url"> | null;
 };
 
+/**
+ * A directional draw exclusion: the giver cannot be assigned the recipient.
+ * Stored per direction, so one side can be blocked without the other.
+ */
+export type MemberExclusion = {
+  id: string;
+  event_id: string;
+  giver_member_id: string;
+  recipient_member_id: string;
+  created_at: string;
+};
+
 export type PreviewMember = {
   id: string;
   name: string;

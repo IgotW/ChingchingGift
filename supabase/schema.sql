@@ -98,6 +98,19 @@ create table if not exists public.event_member_tokens (
   created_at timestamptz not null default now()
 );
 
+-- Directional draw exclusions. A row means "giver cannot draw recipient".
+-- Opposite pairs are stored as two rows, so "Ruz cannot draw Santos" can exist
+-- without also blocking "Santos cannot draw Ruz".
+create table if not exists public.event_member_exclusions (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.events (id) on delete cascade,
+  giver_member_id uuid not null references public.event_members (id) on delete cascade,
+  recipient_member_id uuid not null references public.event_members (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  constraint event_member_exclusions_no_self check (giver_member_id <> recipient_member_id),
+  constraint event_member_exclusions_unique unique (event_id, giver_member_id, recipient_member_id)
+);
+
 create table if not exists public.assignments (
   id uuid primary key default gen_random_uuid(),
   event_id uuid not null references public.events (id) on delete cascade,
@@ -164,6 +177,10 @@ create unique index if not exists event_members_user_unique
 create index if not exists event_members_event_idx on public.event_members (event_id);
 create index if not exists event_members_user_idx on public.event_members (user_id);
 create index if not exists event_member_tokens_event_idx on public.event_member_tokens (event_id);
+create index if not exists event_member_exclusions_event_idx
+  on public.event_member_exclusions (event_id);
+create index if not exists event_member_exclusions_giver_idx
+  on public.event_member_exclusions (event_id, giver_member_id);
 create index if not exists assignments_giver_idx on public.assignments (event_id, giver_member_id);
 create index if not exists assignments_recipient_idx on public.assignments (event_id, recipient_member_id);
 create index if not exists wishlist_items_wishlist_idx on public.wishlist_items (wishlist_id);
@@ -306,6 +323,7 @@ alter table public.profiles enable row level security;
 alter table public.events enable row level security;
 alter table public.event_members enable row level security;
 alter table public.event_member_tokens enable row level security;
+alter table public.event_member_exclusions enable row level security;
 alter table public.assignments enable row level security;
 alter table public.wishlists enable row level security;
 alter table public.wishlist_items enable row level security;
@@ -374,6 +392,26 @@ drop policy if exists "organizers read personal links" on public.event_member_to
 create policy "organizers read personal links"
   on public.event_member_tokens for select to authenticated
   using (public.is_event_organizer(event_id));
+
+-- draw exclusions: organizer-only settings, locked once names are drawn.
+drop policy if exists "organizers read draw exclusions" on public.event_member_exclusions;
+create policy "organizers read draw exclusions"
+  on public.event_member_exclusions for select to authenticated
+  using (public.is_event_organizer(event_id));
+
+drop policy if exists "organizers add draw exclusions" on public.event_member_exclusions;
+create policy "organizers add draw exclusions"
+  on public.event_member_exclusions for insert to authenticated
+  with check (
+    public.is_event_organizer(event_id) and not public.event_has_draw(event_id)
+  );
+
+drop policy if exists "organizers remove draw exclusions" on public.event_member_exclusions;
+create policy "organizers remove draw exclusions"
+  on public.event_member_exclusions for delete to authenticated
+  using (
+    public.is_event_organizer(event_id) and not public.event_has_draw(event_id)
+  );
 
 -- assignments: a giver may read only their own secret. Nobody can write directly.
 drop policy if exists "givers read only their own assignment" on public.assignments;
@@ -611,8 +649,10 @@ $$;
 -- ---------------------------------------------------------------------------
 -- Draw names over the whole roster. Sattolo's algorithm produces a single-cycle
 -- permutation: every giver gets a different recipient, nobody draws themselves,
--- and every person receives exactly one gift. The whole set is written in one
--- transaction, under a lock on the event row.
+-- and every person receives exactly one gift. When the organizer has added
+-- draw exclusions, the draw first looks for a single cycle that avoids them,
+-- then falls back to a general perfect matching if a single cycle cannot work.
+-- The whole set is written in one transaction, under a lock on the event row.
 --
 -- `perform_event_draw` is the internal engine. It is intentionally not callable
 -- by clients; both the signed-in path (`draw_event`) and the no-sign-in personal
@@ -622,6 +662,163 @@ $$;
 -- operation safe when several people tap at the same time; later calls are
 -- no-ops and simply reveal the assignment that already exists.
 -- ---------------------------------------------------------------------------
+
+-- Internal helper: find a complete giver -> recipient matching that avoids
+-- self-assignment and the organizer's directional exclusions. Kuhn's
+-- augmenting-path algorithm is randomised so the pairing is not predictable,
+-- and it fails cleanly when the exclusions make a draw impossible. Not callable
+-- by clients.
+create or replace function public.compute_draw_assignment(
+  p_member_ids uuid[],
+  p_blocked_keys text[]
+)
+returns int[]
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_n int := coalesce(array_length(p_member_ids, 1), 0);
+  v_match int[];
+  v_result int[];
+  v_giver_order int[];
+  v_visited boolean[];
+  v_adj int[];
+  v_blocked boolean[];
+  v_i int;
+  v_j int;
+  v_k int;
+  v_tmp int;
+  v_oi int;
+  v_giver int;
+  v_recipient int;
+  v_candidate int;
+  v_top int;
+  v_u int;
+  v_found boolean;
+  v_augmented boolean;
+  v_stack_u int[];
+  v_stack_rec int[];
+  v_stack_iter int[];
+  v_w int;
+begin
+  if v_n < 2 then
+    raise exception 'You need at least two names on the list to draw.';
+  end if;
+
+  v_match := array_fill(0, array[v_n]);
+  v_result := array_fill(0, array[v_n]);
+
+  -- Randomise the order givers are matched so the same roster does not always
+  -- produce the same pairing.
+  v_giver_order := array_fill(0, array[v_n]);
+  for v_i in 1 .. v_n loop
+    v_giver_order[v_i] := v_i;
+  end loop;
+  for v_i in reverse v_n .. 2 loop
+    v_j := 1 + floor(random() * v_i)::int;
+    v_tmp := v_giver_order[v_i];
+    v_giver_order[v_i] := v_giver_order[v_j];
+    v_giver_order[v_j] := v_tmp;
+  end loop;
+
+  -- A flat n*n matrix keeps the inner loop simple and fast. Each giver also
+  -- gets a random order in which to try recipients.
+  v_adj := array_fill(0, array[v_n * v_n]);
+  v_blocked := array_fill(false, array[v_n * v_n]);
+  for v_i in 1 .. v_n loop
+    for v_j in 1 .. v_n loop
+      v_adj[(v_i - 1) * v_n + v_j] := v_j;
+      if v_i = v_j
+         or (p_member_ids[v_i]::text || ':' || p_member_ids[v_j]::text) = any(p_blocked_keys) then
+        v_blocked[(v_i - 1) * v_n + v_j] := true;
+      end if;
+    end loop;
+
+    for v_j in reverse v_n .. 2 loop
+      v_k := 1 + floor(random() * v_j)::int;
+      v_tmp := v_adj[(v_i - 1) * v_n + v_j];
+      v_adj[(v_i - 1) * v_n + v_j] := v_adj[(v_i - 1) * v_n + v_k];
+      v_adj[(v_i - 1) * v_n + v_k] := v_tmp;
+    end loop;
+  end loop;
+
+  for v_oi in 1 .. v_n loop
+    v_giver := v_giver_order[v_oi];
+    v_visited := array_fill(false, array[v_n]);
+    v_stack_u := array[v_giver];
+    v_stack_rec := array[0];
+    v_stack_iter := array[0];
+    v_augmented := false;
+
+    while coalesce(array_length(v_stack_u, 1), 0) > 0 loop
+      v_top := array_length(v_stack_u, 1);
+      v_u := v_stack_u[v_top];
+      v_found := false;
+
+      while v_stack_iter[v_top] < v_n loop
+        v_stack_iter[v_top] := v_stack_iter[v_top] + 1;
+        v_candidate := v_adj[(v_u - 1) * v_n + v_stack_iter[v_top]];
+
+        if v_visited[v_candidate] or v_blocked[(v_u - 1) * v_n + v_candidate] then
+          continue;
+        end if;
+        v_visited[v_candidate] := true;
+
+        if v_match[v_candidate] = 0 then
+          v_match[v_candidate] := v_u;
+          v_w := v_top - 1;
+          while v_w >= 1 loop
+            v_match[v_stack_rec[v_w + 1]] := v_stack_u[v_w];
+            v_w := v_w - 1;
+          end loop;
+          v_augmented := true;
+          v_found := true;
+          exit;
+        end if;
+
+        v_stack_u := v_stack_u || v_match[v_candidate];
+        v_stack_rec := v_stack_rec || v_candidate;
+        v_stack_iter := v_stack_iter || 0;
+        v_found := true;
+        exit;
+      end loop;
+
+      if v_augmented then
+        exit;
+      end if;
+
+      if not v_found then
+        if v_top <= 1 then
+          v_stack_u := '{}';
+          v_stack_rec := '{}';
+          v_stack_iter := '{}';
+        else
+          v_stack_u := v_stack_u[1:v_top - 1];
+          v_stack_rec := v_stack_rec[1:v_top - 1];
+          v_stack_iter := v_stack_iter[1:v_top - 1];
+        end if;
+      end if;
+    end loop;
+
+    if not v_augmented then
+      raise exception 'No valid draw is possible with these exclusions. Remove some exclusions or add more names, then try again.';
+    end if;
+  end loop;
+
+  -- Convert recipient -> giver matches into a giver -> recipient result.
+  for v_recipient in 1 .. v_n loop
+    v_giver := v_match[v_recipient];
+    if v_giver = 0 then
+      raise exception 'No valid draw is possible with these exclusions. Remove some exclusions or add more names, then try again.';
+    end if;
+    v_result[v_giver] := v_recipient;
+  end loop;
+
+  return v_result;
+end;
+$$;
+
 create or replace function public.perform_event_draw(p_event_id uuid)
 returns void
 language plpgsql
@@ -632,10 +829,16 @@ declare
   v_actor uuid := auth.uid();
   v_event public.events;
   v_ids uuid[];
+  v_order uuid[];
+  v_positions int[];
+  v_blocked_keys text[];
+  v_exclusion_count int;
   v_count int;
   v_i int;
   v_j int;
   v_tmp uuid;
+  v_attempt int;
+  v_ok boolean;
 begin
   select * into v_event from public.events where id = p_event_id for update;
   if not found then
@@ -661,23 +864,78 @@ begin
     raise exception 'You need at least two names on the list to draw.';
   end if;
 
-  -- Sattolo shuffle
-  for v_i in reverse v_count .. 2 loop
-    v_j := 1 + floor(random() * (v_i - 1))::int;
-    v_tmp := v_ids[v_i];
-    v_ids[v_i] := v_ids[v_j];
-    v_ids[v_j] := v_tmp;
-  end loop;
+  select coalesce(
+    array_agg(giver_member_id::text || ':' || recipient_member_id::text),
+    '{}'::text[]
+  )
+  into v_blocked_keys
+  from public.event_member_exclusions
+  where event_id = p_event_id;
 
-  -- Single cycle: ids[i] gives to ids[i + 1]
-  for v_i in 1 .. v_count loop
-    insert into public.assignments (event_id, giver_member_id, recipient_member_id)
-    values (
-      p_event_id,
-      v_ids[v_i],
-      v_ids[case when v_i = v_count then 1 else v_i + 1 end]
-    );
-  end loop;
+  v_exclusion_count := coalesce(array_length(v_blocked_keys, 1), 0);
+
+  if v_exclusion_count = 0 then
+    -- Classic draw: one random single cycle.
+    v_order := v_ids;
+    for v_i in reverse v_count .. 2 loop
+      v_j := 1 + floor(random() * (v_i - 1))::int;
+      v_tmp := v_order[v_i];
+      v_order[v_i] := v_order[v_j];
+      v_order[v_j] := v_tmp;
+    end loop;
+    v_ok := true;
+  else
+    -- First try a random single-cycle draw, preserving the classic Secret
+    -- Santa shape whenever the exclusions allow it.
+    v_ok := false;
+    for v_attempt in 1 .. 500 loop
+      v_order := v_ids;
+      for v_i in reverse v_count .. 2 loop
+        v_j := 1 + floor(random() * (v_i - 1))::int;
+        v_tmp := v_order[v_i];
+        v_order[v_i] := v_order[v_j];
+        v_order[v_j] := v_tmp;
+      end loop;
+
+      v_ok := true;
+      for v_i in 1 .. v_count loop
+        if (
+          v_order[v_i]::text || ':' ||
+          v_order[case when v_i = v_count then 1 else v_i + 1 end]::text
+        ) = any(v_blocked_keys) then
+          v_ok := false;
+          exit;
+        end if;
+      end loop;
+
+      if v_ok then
+        exit;
+      end if;
+    end loop;
+
+    -- A single cycle is not always possible (for example two separate pairs
+    -- that must not mix). Fall back to a general perfect matching.
+    if not v_ok then
+      v_positions := public.compute_draw_assignment(v_ids, v_blocked_keys);
+    end if;
+  end if;
+
+  if v_ok then
+    -- Single cycle: order[i] gives to order[i + 1].
+    for v_i in 1 .. v_count loop
+      insert into public.assignments (event_id, giver_member_id, recipient_member_id)
+      values (
+        p_event_id,
+        v_order[v_i],
+        v_order[case when v_i = v_count then 1 else v_i + 1 end]
+      );
+    end loop;
+  else
+    for v_i in 1 .. v_count loop
+      insert into public.assignments (event_id, giver_member_id, recipient_member_id)
+      values (p_event_id, v_ids[v_i], v_ids[v_positions[v_i]]);
+    end loop;
+  end if;
 
   update public.events
   set status = 'drawn', drawn_at = now()
@@ -695,7 +953,12 @@ begin
   where m.event_id = p_event_id and m.user_id is not null;
 
   insert into public.event_audit (event_id, actor_id, action, details)
-  values (p_event_id, v_actor, 'draw_completed', jsonb_build_object('members', v_count));
+  values (
+    p_event_id,
+    v_actor,
+    'draw_completed',
+    jsonb_build_object('members', v_count, 'exclusions', v_exclusion_count)
+  );
 end;
 $$;
 
@@ -1104,6 +1367,7 @@ revoke all on function public.my_assignment(uuid) from public;
 revoke all on function public.draw_event(uuid) from public;
 revoke all on function public.draw_by_token(text) from public;
 revoke all on function public.perform_event_draw(uuid) from public, anon, authenticated;
+revoke all on function public.compute_draw_assignment(uuid[], text[]) from public, anon, authenticated;
 revoke all on function public.reset_draw(uuid, text) from public;
 revoke all on function public.announce_event(uuid, text, text) from public;
 revoke all on function public.notify_event_update(uuid, text) from public;
@@ -1133,6 +1397,10 @@ grant execute on function public.event_has_draw(uuid) to authenticated;
 -- Personal tokens are organizer-only data, even at the table-privilege layer.
 revoke all on public.event_member_tokens from anon, authenticated;
 grant select on public.event_member_tokens to authenticated;
+
+-- Draw exclusions are organizer-only settings.
+revoke all on public.event_member_exclusions from anon, authenticated;
+grant select, insert, delete on public.event_member_exclusions to authenticated;
 
 -- Keep helper internals off the public API surface.
 revoke all on function public.handle_new_user() from public, anon, authenticated;

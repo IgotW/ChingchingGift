@@ -286,6 +286,127 @@ export async function removeMemberAction(
   return { success: "Name removed from the roster." };
 }
 
+/**
+ * Save a directional draw exclusion: the giver cannot be assigned the
+ * recipient. Checking "both ways" saves the opposite direction too.
+ */
+export async function addExclusionAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const eventId = text(formData, "event_id", { required: true });
+  const giverId = text(formData, "giver_member_id", { required: true });
+  const recipientId = text(formData, "recipient_member_id", { required: true });
+  const bothSides = formData.get("both_sides") !== null;
+
+  if (!eventId) return { error: "Missing event." };
+  if (!giverId || !recipientId) {
+    return { error: "Choose both people for this exclusion." };
+  }
+  if (giverId === recipientId) {
+    return {
+      error:
+        "Choose two different people. Nobody can draw their own name anyway.",
+    };
+  }
+
+  const session = await requireProfile(`/events/${eventId}/manage`);
+  const context = await editableRosterEvent(eventId, session.user.id);
+  if ("error" in context) return { error: context.error };
+
+  const { data: memberRows, error: memberError } = await context.supabase
+    .from("event_members")
+    .select("id")
+    .eq("event_id", eventId)
+    .in("id", [giverId, recipientId]);
+
+  if (memberError) {
+    return { error: friendlyError(memberError, "Could not check the roster.") };
+  }
+  if (!memberRows || memberRows.length !== 2) {
+    return { error: "Both people must be on this event's roster." };
+  }
+
+  const desired: [string, string][] = bothSides
+    ? [
+        [giverId, recipientId],
+        [recipientId, giverId],
+      ]
+    : [[giverId, recipientId]];
+
+  const { data: existingRows } = await context.supabase
+    .from("event_member_exclusions")
+    .select("giver_member_id, recipient_member_id")
+    .eq("event_id", eventId);
+
+  const existing = new Set(
+    (existingRows ?? []).map(
+      (row) =>
+        `${row.giver_member_id as string}:${row.recipient_member_id as string}`,
+    ),
+  );
+  const missing = desired.filter(
+    ([giver, recipient]) => !existing.has(`${giver}:${recipient}`),
+  );
+
+  if (!missing.length) {
+    return { success: "That exclusion is already saved." };
+  }
+
+  const { error } = await context.supabase
+    .from("event_member_exclusions")
+    .insert(
+      missing.map(([giver, recipient]) => ({
+        event_id: eventId,
+        giver_member_id: giver,
+        recipient_member_id: recipient,
+      })),
+    );
+
+  if (error) {
+    return {
+      error: friendlyError(error, "Could not save that exclusion."),
+    };
+  }
+
+  revalidatePath(`/events/${eventId}/manage`);
+  revalidatePath(`/events/${eventId}`);
+  return {
+    success: bothSides
+      ? "Exclusion saved both ways."
+      : "Exclusion saved.",
+  };
+}
+
+export async function removeExclusionAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const eventId = text(formData, "event_id", { required: true });
+  const exclusionId = text(formData, "exclusion_id", { required: true });
+  if (!eventId || !exclusionId) return { error: "Missing exclusion." };
+
+  const session = await requireProfile(`/events/${eventId}/manage`);
+  const context = await editableRosterEvent(eventId, session.user.id);
+  if ("error" in context) return { error: context.error };
+
+  const { error } = await context.supabase
+    .from("event_member_exclusions")
+    .delete()
+    .eq("id", exclusionId)
+    .eq("event_id", eventId);
+
+  if (error) {
+    return {
+      error: friendlyError(error, "Could not remove that exclusion."),
+    };
+  }
+
+  revalidatePath(`/events/${eventId}/manage`);
+  revalidatePath(`/events/${eventId}`);
+  return { success: "Exclusion removed." };
+}
+
 export async function drawNamesAction(
   _prev: ActionState,
   formData: FormData,

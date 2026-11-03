@@ -7,10 +7,12 @@ import { Avatar } from "@/components/avatar";
 import { CopyButton } from "@/components/copy-button";
 import { StatusChip } from "@/components/status-chip";
 import {
+  addExclusionAction,
   addMemberAction,
   announceAction,
   completeEventAction,
   drawNamesAction,
+  removeExclusionAction,
   removeMemberAction,
   renameMemberAction,
   resetDrawAction,
@@ -20,6 +22,7 @@ import { requireProfile } from "@/lib/auth";
 import {
   getEvent,
   getEventAudit,
+  getEventExclusions,
   getEventMembers,
   getMemberTokens,
   getWishlistStatus,
@@ -65,14 +68,16 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
   const event = await getEvent(id);
   if (!event || event.organizer_id !== session.user.id) notFound();
 
-  const [members, wishlistStatus, tokens, audit] = await Promise.all([
+  const [members, wishlistStatus, tokens, audit, exclusions] = await Promise.all([
     getEventMembers(id),
     getWishlistStatus(id),
     getMemberTokens(id),
     getEventAudit(id),
+    getEventExclusions(id),
   ]);
 
   const wishlistMap = new Map(wishlistStatus.map((row) => [row.member_id, row]));
+  const memberName = new Map(members.map((row) => [row.id, row.display_name]));
   const claimedCount = members.filter((row) => row.user_id).length;
   const wishlistReady = wishlistStatus.filter(
     (row) => row.is_published && row.item_count > 0,
@@ -524,6 +529,163 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
             </p>
           </section>
 
+          <section id="exclusions" className="card p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-semibold text-pine-950">
+                  Draw exclusions
+                </h2>
+                <p className="text-xs text-muted">
+                  Optional. Choose who must not draw whom in this exchange.
+                </p>
+              </div>
+              {isLocked ? (
+                <span className="chip bg-cream-100 text-muted">
+                  Locked after the draw
+                </span>
+              ) : (
+                <span className="chip bg-cream-100 text-muted">
+                  Editable before the draw
+                </span>
+              )}
+            </div>
+
+            {!isLocked && members.length >= 2 ? (
+              <div className="mt-4 rounded-xl border border-cream-200 bg-cream-50 p-4">
+                <ActionForm
+                  action={addExclusionAction}
+                  submitLabel="Add exclusion"
+                  pendingLabel="Saving…"
+                  className="space-y-3"
+                  buttonClassName="btn btn-primary btn-sm"
+                  resetOnSuccess
+                >
+                  <input type="hidden" name="event_id" value={id} />
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-end">
+                    <div>
+                      <label htmlFor="exclusion-giver" className="label">
+                        This person
+                      </label>
+                      <select
+                        id="exclusion-giver"
+                        name="giver_member_id"
+                        required
+                        defaultValue=""
+                        className="field"
+                      >
+                        <option value="" disabled>
+                          Choose a name
+                        </option>
+                        {members.map((row) => (
+                          <option key={row.id} value={row.id}>
+                            {row.display_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="pb-2 text-center text-sm font-semibold text-muted">
+                      cannot draw
+                    </p>
+                    <div>
+                      <label htmlFor="exclusion-recipient" className="label">
+                        this person
+                      </label>
+                      <select
+                        id="exclusion-recipient"
+                        name="recipient_member_id"
+                        required
+                        defaultValue=""
+                        className="field"
+                      >
+                        <option value="" disabled>
+                          Choose a name
+                        </option>
+                        {members.map((row) => (
+                          <option key={row.id} value={row.id}>
+                            {row.display_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <label className="flex items-start gap-3 text-sm text-pine-950">
+                    <input
+                      type="checkbox"
+                      name="both_sides"
+                      className="mt-0.5 size-4 rounded border-cream-300 text-pine-700 focus:ring-pine-600"
+                    />
+                    <span>
+                      <span className="font-semibold">Block both ways.</span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-muted">
+                        Also stop the other person from drawing this name. Leave
+                        unchecked for a one-way exclusion.
+                      </span>
+                    </span>
+                  </label>
+                </ActionForm>
+              </div>
+            ) : (
+              <p className="mt-4 rounded-xl bg-cream-100 px-4 py-3 text-sm text-muted">
+                {isLocked
+                  ? "Exclusions are locked once names are drawn."
+                  : "Add at least two names to the roster before creating exclusions."}
+              </p>
+            )}
+
+            {exclusions.length ? (
+              <ul className="mt-4 divide-y divide-cream-200">
+                {exclusions.map((exclusion) => {
+                  const giver = memberName.get(exclusion.giver_member_id);
+                  const recipient = memberName.get(
+                    exclusion.recipient_member_id,
+                  );
+                  return (
+                    <li
+                      key={exclusion.id}
+                      className="flex flex-wrap items-center justify-between gap-3 py-3"
+                    >
+                      <p className="text-sm text-ink">
+                        <span className="font-semibold">
+                          {giver ?? "Unknown"}
+                        </span>
+                        <span className="text-muted"> cannot draw </span>
+                        <span className="font-semibold">
+                          {recipient ?? "Unknown"}
+                        </span>
+                      </p>
+                      {!isLocked ? (
+                        <ActionForm
+                          action={removeExclusionAction}
+                          submitLabel="Remove"
+                          pendingLabel="Removing…"
+                          className="flex items-center"
+                          buttonClassName={DANGER_BUTTON}
+                        >
+                          <input type="hidden" name="event_id" value={id} />
+                          <input
+                            type="hidden"
+                            name="exclusion_id"
+                            value={exclusion.id}
+                          />
+                        </ActionForm>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="mt-4 rounded-xl border border-cream-200 bg-cream-50 px-4 py-3 text-sm text-muted">
+                No exclusions yet. Everyone can draw anyone except themselves.
+              </p>
+            )}
+
+            <p className="mt-4 text-xs leading-relaxed text-muted">
+              Exclusions are directional. The draw still gives everyone exactly
+              one recipient. If the rules make a fair draw impossible, the app
+              will ask you to remove one or add more names.
+            </p>
+          </section>
+
           <section id="announce" className="card p-6">
             <h2 className="text-xl font-semibold text-pine-950">
               Send an announcement
@@ -839,8 +1001,9 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
             </p>
             <p className="mt-2 text-sm leading-relaxed text-muted">
               Every name on the roster gets exactly one recipient, nobody draws
-              themselves, and no recipient is assigned twice. The database does
-              the work inside a transaction, so double clicks can never break it.
+              themselves, no recipient is assigned twice, and any draw
+              exclusions you set are respected. The database does the work
+              inside a transaction, so double clicks can never break it.
             </p>
           </div>
         </aside>

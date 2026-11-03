@@ -7,11 +7,11 @@ A polished Christmas gift-exchange app: create an exchange, invite guests with a
 - **Google-only, passwordless auth** — verified email, automatic profile, one-click sign-out.
 - **Events** — name, description, party date, budget, registration and wishlist deadlines, instructions, and status.
 - **Invitations** — shareable link and short code. Guests preview the event before joining and join only once.
-- **Fair, final draw** — one recipient per giver, no self-assignments, no duplicate recipients, minimum two confirmed participants. Runs atomically inside a locked Postgres transaction. Repeated requests cannot draw twice.
+- **Fair, final draw** — one recipient per giver, no self-assignments, no duplicate recipients, minimum two confirmed participants. Optional directional exclusions let the organizer stop specific people from drawing each other (for example, partners or roommates). Runs atomically inside a locked Postgres transaction. Repeated requests cannot draw twice.
 - **Private assignments** — each giver sees only their own recipient. Organizers cannot read assignments by default.
 - **Wishlists** — multiple items with title, details, product link, colour, size, price, priority, and notes. Visible only to the owner and their assigned giver. Publish, edit, and remove at any time until the event is completed.
 - **Notifications** — in-app notifications for the draw, wishlist updates, announcements, new guests, and event changes. Wishlist updates are merged by the database within 30 minutes so rapid edits do not flood the giver.
-- **Organizer tools** — participant confirmation/removal, wishlist progress, deadlines, announcements, draw controls, a controlled draw reset, event completion, and an audit trail.
+- **Organizer tools** — participant confirmation/removal, directional draw exclusions, wishlist progress, deadlines, announcements, draw controls, a controlled draw reset, event completion, and an audit trail.
 - **Optional email** — Brevo transactional email for wishlist updates through a server-only service-role client. The app works fully without it.
 - **Responsive, festive UI** — cream, pine, holly, and gold theme with accessible components and skeleton loading states.
 
@@ -106,10 +106,15 @@ Open [http://localhost:3000](http://localhost:3000). If Supabase is not configur
 2. Rejects anyone who is not the organizer or when a draw already exists.
 3. Requires the event to be `registration_closed` and at least two confirmed participants.
 4. Uses **Sattolo's algorithm** to produce a single-cycle permutation — every giver gets exactly one recipient, nobody draws themselves, and every participant receives exactly one gift.
-5. Inserts all assignments and marks the event `drawn` in one transaction.
-6. Creates a private `draw_ready` notification for each confirmed participant and writes an audit entry.
+5. When the organizer added draw exclusions, first retries random single-cycle draws that avoid them, then falls back to a randomised perfect-matching search. If no assignment satisfies every rule, the draw stops with a clear message instead of creating an unfair result.
+6. Inserts all assignments and marks the event `drawn` in one transaction.
+7. Creates a private `draw_ready` notification for each confirmed participant and writes an audit entry.
 
 Unique constraints on `(event_id, giver_id)` and `(event_id, recipient_id)` are a second line of defence.
+
+### Draw exclusions
+
+Organizers can add directional exclusions before the draw: "A cannot draw B". Opposite pairs are stored as two rows, so a mutual exclusion ("A cannot draw B and B cannot draw A") and a one-way exclusion ("A cannot draw B, but B can draw A") are both supported. Exclusions use roster member ids, are locked once names are drawn, and are deleted automatically when someone leaves the roster.
 
 ### Privacy model
 

@@ -78,6 +78,7 @@ export function friendlyError(
     [/duplicate key/i, "That has already been done."],
     [/assignments_no_self/i, "A draw cannot assign someone to themselves."],
     [/at least two names|at least two/i, "Add at least two names before drawing."],
+    [/no valid draw is possible with these exclusions/i, "These exclusions make the draw impossible. Remove one or add more names, then try again."],
     [/already final/i, "This draw is already final."],
     [/complete\.|already completed|is already completed/i, "This exchange is complete and can no longer be changed."],
     [/deadline.*passed/i, "The deadline for this event has passed."],

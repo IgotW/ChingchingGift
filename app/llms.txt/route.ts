@@ -14,6 +14,7 @@ Sitemap: ${siteUrl}/sitemap.xml
 
 - Creates a Secret Santa, Christmas gift exchange, office gift exchange, or white elephant event.
 - Draws names in a complete one-to-one loop. Every participant gives one gift and receives one gift. Nobody draws themselves.
+- Lets the organizer add directional draw exclusions, such as "Juan cannot draw Pedro" or "Ruz cannot draw Santos", including mutual pairs.
 - Keeps assignments private at the database level. The organizer cannot see who got whom.
 - Lets participants build a wishlist with gift ideas, links, colors, sizes, prices, priorities, and notes.
 - Publishes wishlists only to the assigned Secret Santa when the owner is ready.

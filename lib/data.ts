@@ -5,6 +5,7 @@ import type {
   EventMember,
   EventPreview,
   EventWithOrganizer,
+  MemberExclusion,
   MemberView,
   NotificationRecord,
   WishlistRecord,
@@ -154,6 +155,22 @@ export async function getMyMember(eventId: string): Promise<EventMember | null> 
     .maybeSingle();
 
   return (data as unknown as EventMember) ?? null;
+}
+
+/** Organizer-only directional draw exclusions. */
+export async function getEventExclusions(
+  eventId: string,
+): Promise<MemberExclusion[]> {
+  const supabase = await createServerSupabase();
+  const { data } = await supabase
+    .from("event_member_exclusions")
+    .select(
+      "id, event_id, giver_member_id, recipient_member_id, created_at",
+    )
+    .eq("event_id", eventId)
+    .order("created_at", { ascending: true });
+
+  return (data as MemberExclusion[]) ?? [];
 }
 
 /** Organizer-only personal reveal links, keyed by roster member id. */
