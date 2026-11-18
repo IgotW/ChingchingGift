@@ -2,14 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { ActionForm } from "@/components/action-form";
 import { EmptyState } from "@/components/empty-state";
-import { RevealRecipient } from "@/components/reveal-recipient";
+import { SignedInDraw } from "@/components/signed-in-draw";
 import { StatusChip } from "@/components/status-chip";
-import { drawNamesAction } from "@/lib/actions/events";
+import { revealMyAssignmentAction } from "@/lib/actions/events";
 import { requireProfile } from "@/lib/auth";
-import { getEventForMember, getMyAssignment, getWishlist } from "@/lib/data";
-import { formatDate, formatMoney } from "@/lib/format";
+import { getEvent, getEventForMember, getMyAssignment } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: "My assignment",
@@ -27,62 +25,38 @@ async function DrawContent({
   const session = await requireProfile(`/events/${id}/draw`);
 
   const context = await getEventForMember(id);
-  if (!context) notFound();
+  if (!context) {
+    const event = await getEvent(id);
+    if (!event) notFound();
+    return (
+      <div className="container-page max-w-3xl py-10 lg:py-14">
+        <Link
+          href="/dashboard"
+          className="text-sm font-semibold text-muted hover:text-pine-800"
+        >
+          ← Dashboard
+        </Link>
+        <div className="mt-6">
+          <EmptyState
+            icon="gift"
+            title="Join from the public link to draw"
+            body="This exchange uses a shared public link. Open it, choose your own name from the roster, and draw once to see your recipient. If you are signed in, your name will be linked to your account when possible."
+            action={
+              <Link href={`/join/${event.invite_code}`} className="btn btn-primary">
+                Open public draw link
+              </Link>
+            }
+          />
+        </div>
+      </div>
+    );
+  }
 
   const { event, member } = context;
   const assignment = await getMyAssignment(id);
   const justClaimed = query.claimed === "1";
 
   if (!assignment) {
-    const waiting =
-      event.status === "upcoming" || event.status === "registration_closed";
-    const canStartDraw = Boolean(member) && waiting;
-
-    if (canStartDraw) {
-      return (
-        <div className="container-page max-w-3xl py-10 lg:py-14">
-          <Link
-            href={`/events/${id}`}
-            className="text-sm font-semibold text-muted hover:text-pine-800"
-          >
-            ← {event.name}
-          </Link>
-
-          {justClaimed ? (
-            <div className="mt-5 rounded-2xl border border-pine-600/20 bg-pine-100/70 px-4 py-3 text-sm font-medium text-pine-900">
-              You are in as {member?.display_name}. The roster is already
-              complete, so you can draw right now.
-            </div>
-          ) : null}
-
-          <div className="mt-6">
-            <EmptyState
-              icon="gift"
-              title={`Ready to draw, ${member?.display_name.split(" ")[0]}?`}
-              body="Everyone is already on the roster, so there is nothing to wait for. Draw once and your private recipient appears here."
-              action={
-                <ActionForm
-                  action={drawNamesAction}
-                  submitLabel="Draw my name now"
-                  pendingLabel="Drawing names…"
-                  className="flex flex-col items-center gap-3"
-                  buttonClassName="btn btn-primary px-7 py-3 text-base"
-                  confirm="Draw the names now? Everyone's assignment becomes final until the organizer resets the draw."
-                >
-                  <input type="hidden" name="event_id" value={id} />
-                </ActionForm>
-              }
-            />
-          </div>
-
-          <p className="mt-6 text-center text-xs leading-relaxed text-muted">
-            The draw is shared: if another guest taps first, you will see the
-            same result. Nobody except you can see who you drew.
-          </p>
-        </div>
-      );
-    }
-
     return (
       <div className="container-page max-w-3xl py-10 lg:py-14">
         <Link
@@ -91,56 +65,84 @@ async function DrawContent({
         >
           ← {event.name}
         </Link>
+
+        {justClaimed ? (
+          <div className="mt-5 rounded-2xl border border-pine-600/20 bg-pine-100/70 px-4 py-3 text-sm font-medium text-pine-900">
+            You are in as {member?.display_name}. Draw once to see your Secret
+            Santa recipient.
+          </div>
+        ) : null}
+
         <div className="mt-6">
-          {waiting ? (
-            <EmptyState
-              icon="gift"
-              title="No assignment yet"
-              body={
-                member
-                  ? "Your name is on the roster, but there are not enough names to draw yet. Ask the organizer to add more people."
-                  : "Claim your name on the event page first, then come back to draw."
-              }
-              action={
-                member ? (
-                  <Link
-                    href={`/events/${id}/wishlist`}
-                    className="btn btn-secondary"
-                  >
-                    Work on my wishlist meanwhile
-                  </Link>
-                ) : (
-                  <Link href={`/events/${id}`} className="btn btn-secondary">
-                    Back to the event
-                  </Link>
-                )
-              }
-            />
-          ) : (
-            <EmptyState
-              icon="gift"
-              title="You are not part of this draw"
-              body="This name was not included in the final roster, so there is no assignment for you. Talk to the organizer if you think this is a mistake."
-              action={
-                <Link href={`/events/${id}`} className="btn btn-secondary">
-                  Back to the event
+          <EmptyState
+            icon="gift"
+            title={member ? "Ready when you are" : "No assignment yet"}
+            body={
+              member
+                ? "Use the shared public draw link to choose your name and reveal your recipient once. The result is shown only once and cannot be viewed again."
+                : "You do not have a roster membership in this exchange. Ask the organizer for the shared public link."
+            }
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Link
+                  href={`/join/${event.invite_code}`}
+                  className="btn btn-primary"
+                >
+                  Open public draw link
                 </Link>
-              }
-            />
-          )}
+                <Link href={`/events/${id}`} className="btn btn-secondary">
+                  Back to event
+                </Link>
+              </div>
+            }
+          />
         </div>
-        <div className="mt-8 flex justify-center">
-          <StatusChip status={event.status} />
-        </div>
+
+        <p className="mt-6 text-center text-xs leading-relaxed text-muted">
+          For privacy, each person draws once and the revealed name is shown only
+          once — not even to the organizer.
+        </p>
       </div>
     );
   }
 
-  const wishlist = assignment.recipient_user_id
-    ? await getWishlist(id, assignment.recipient_user_id)
-    : null;
-  const giftCount = wishlist?.items.length ?? assignment.wishlist_item_count;
-  const published = wishlist?.is_published ?? assignment.wishlist_published;
+  if (assignment.revealed) {
+    return (
+      <div className="container-page max-w-3xl py-10 lg:py-14">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link
+            href={`/events/${id}`}
+            className="text-sm font-semibold text-muted hover:text-pine-800"
+          >
+            ← {event.name}
+          </Link>
+          <div className="flex items-center gap-2">
+            <StatusChip status={event.status} />
+            <span className="chip bg-cream-100 text-muted">
+              Signed in as {session.profile.full_name.split(" ")[0]}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <EmptyState
+            icon="gift"
+            title="Your draw was already revealed"
+            body="For privacy, your Secret Santa recipient was shown only once and cannot be displayed again — not even to the organizer. If you saved a screenshot or note, use that to remember who you drew."
+            action={
+              <Link href={`/events/${id}`} className="btn btn-secondary">
+                Back to the event
+              </Link>
+            }
+          />
+        </div>
+
+        <p className="mt-6 text-center text-xs leading-relaxed text-muted">
+          This protects the surprise and keeps the exchange fair for everyone.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="container-page max-w-3xl py-10 lg:py-14">
@@ -160,30 +162,11 @@ async function DrawContent({
       </div>
 
       <div className="mt-6">
-        <RevealRecipient
+        <SignedInDraw
+          action={revealMyAssignmentAction}
           eventId={id}
-          eventName={event.name}
-          recipientName={assignment.recipient_name}
-          recipientAvatar={assignment.recipient_avatar_url}
-          wishlistCount={giftCount}
-          wishlistPublished={published}
-          budget={formatMoney(event.gift_budget, event.currency)}
-          wishlistDeadline={formatDate(event.wishlist_deadline, false)}
-          completed={event.status === "completed"}
+          memberName={member?.display_name ?? session.profile.full_name}
         />
-      </div>
-
-      <div className="mt-6 grid gap-3 sm:grid-cols-2">
-        <div className="card-muted px-4 py-3 text-sm leading-relaxed text-muted">
-          <strong className="font-semibold text-pine-950">Privacy check:</strong>{" "}
-          only you can open your assignment. Your recipient cannot see that you
-          drew them, and other guests cannot guess from the roster.
-        </div>
-        <div className="card-muted px-4 py-3 text-sm leading-relaxed text-muted">
-          <strong className="font-semibold text-pine-950">Need ideas?</strong>{" "}
-          Their wishlist is the best place to start. You will get a notification
-          if they update it.
-        </div>
       </div>
     </div>
   );

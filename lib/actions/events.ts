@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { requireProfile } from "../auth";
 import { createServerSupabase } from "../supabase/server";
 import { friendlyError, text } from "../validation";
-import type { ActionState, EventRecord } from "../types";
+import type { ActionState, DrawRevealResult, EventRecord } from "../types";
 
 const CURRENCIES = ["USD", "EUR", "GBP", "PHP", "AUD", "CAD", "SGD"];
 
@@ -432,37 +432,18 @@ export async function drawNamesAction(
 }
 
 /**
- * Draw from a personal link. The token is the credential, so this deliberately
- * works without an account — perfect for guests who do not use Google sign-in.
- * The database makes repeat clicks safe, so everyone can use the same button.
+ * Legacy per-member personal draw links are no longer supported. The exchange
+ * now uses a single shared public link where each person chooses their own name
+ * and reveals once.
  */
 export async function drawByTokenAction(
   _prev: ActionState,
-  formData: FormData,
+  _formData: FormData,
 ): Promise<ActionState> {
-  const token = text(formData, "token", { max: 200, required: true });
-  if (!token) return { error: "This personal link is incomplete." };
-
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase.rpc("draw_by_token", {
-    p_token: token,
-  });
-
-  if (error) {
-    return { error: friendlyError(error, "The draw could not be completed.") };
-  }
-
-  const eventId = typeof data === "string" ? data : null;
-  revalidatePath(`/claim/${encodeURIComponent(token)}`);
-  if (eventId) {
-    revalidatePath(`/events/${eventId}`);
-    revalidatePath(`/events/${eventId}/manage`);
-    revalidatePath(`/events/${eventId}/draw`);
-  }
-  revalidatePath("/dashboard");
-  revalidatePath("/notifications");
-
-  return { success: "Names drawn! Your recipient is ready." };
+  return {
+    error:
+      "Personal draw links are no longer used. Ask the organizer for the shared public link, then choose your name to draw once.",
+  };
 }
 
 export async function resetDrawAction(
@@ -558,7 +539,7 @@ export async function announceAction(
   return { success: "Announcement sent to everyone who claimed a name." };
 }
 
-/** Signed-in guest claims one name from the public roster. */
+/** Signed-in guest claims one name from the public roster (optional). */
 export async function claimMemberAction(
   _prev: ActionState,
   formData: FormData,
@@ -574,7 +555,6 @@ export async function claimMemberAction(
   const supabase = await createServerSupabase();
   const { data, error } = await supabase.rpc("claim_member", {
     p_member_id: memberId,
-    p_code: code,
   });
 
   if (error || !data) {
@@ -597,6 +577,66 @@ export async function lookupCodeAction(
   const code = text(formData, "code", { max: 40, required: true });
   if (!code) return { error: "Enter the invitation code from your host." };
 
-  await requireProfile(`/join?code=${encodeURIComponent(code)}`);
   redirect(`/join/${encodeURIComponent(code)}`);
+}
+
+/**
+ * Public, no-sign-in one-time draw. The viewer picks their own name from the
+ * shared event link and reveals their recipient exactly once.
+ */
+export async function drawAndRevealAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const memberId = text(formData, "member_id", { required: true });
+  const code = text(formData, "code", { max: 40, required: true });
+  if (!memberId || !code) {
+    return { error: "Choose your name from the list to draw." };
+  }
+
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase.rpc("draw_and_reveal", {
+    p_code: code,
+    p_member_id: memberId,
+  });
+
+  if (error || !data) {
+    return { error: friendlyError(error, "Could not draw a name right now.") };
+  }
+
+  const reveal = data as unknown as DrawRevealResult;
+  revalidatePath(`/join/${encodeURIComponent(code)}`);
+  revalidatePath(`/events/${reveal.event_id}`);
+  revalidatePath(`/events/${reveal.event_id}/draw`);
+  revalidatePath(`/events/${reveal.event_id}/manage`);
+  revalidatePath("/dashboard");
+  revalidatePath("/notifications");
+  return { reveal };
+}
+
+/** Signed-in one-time reveal for the caller's own roster membership. */
+export async function revealMyAssignmentAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const eventId = text(formData, "event_id", { required: true });
+  if (!eventId) return { error: "Missing event." };
+
+  await requireProfile(`/events/${eventId}/draw`);
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase.rpc("reveal_my_assignment", {
+    p_event_id: eventId,
+  });
+
+  if (error || !data) {
+    return { error: friendlyError(error, "Could not reveal your assignment.") };
+  }
+
+  const reveal = data as unknown as DrawRevealResult;
+  revalidatePath(`/events/${eventId}`);
+  revalidatePath(`/events/${eventId}/draw`);
+  revalidatePath(`/events/${eventId}/recipient`);
+  revalidatePath(`/events/${eventId}/manage`);
+  revalidatePath("/dashboard");
+  return { reveal };
 }

@@ -3,7 +3,6 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { ActionForm } from "@/components/action-form";
 import { lookupCodeAction } from "@/lib/actions/events";
-import { requireProfile } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Join an exchange",
@@ -14,38 +13,37 @@ async function JoinContent({
 }: {
   searchParams: Promise<{ code?: string | string[] }>;
 }) {
-  await requireProfile("/join");
   const query = await searchParams;
   const code = typeof query.code === "string" ? query.code : "";
 
   return (
     <div className="container-page max-w-3xl py-10 lg:py-14">
       <Link
-        href="/dashboard"
+        href="/"
         className="text-sm font-semibold text-muted hover:text-pine-800"
       >
-        ← Dashboard
+        ← Home
       </Link>
 
       <div className="mt-5">
         <p className="text-[0.68rem] font-bold uppercase tracking-[0.2em] text-holly-600">
-          You are invited
+          Shared public link
         </p>
         <h1 className="mt-2 font-display text-4xl text-pine-950 sm:text-5xl">
-          Claim your name
+          Open your exchange
         </h1>
         <p className="mt-3 max-w-xl text-muted">
-          Enter the invitation code from your host. You will see the roster and
-          claim your own name — then you can build a wishlist and reveal your
-          recipient.
+          Enter the invitation code from your host to open the shared draw link.
+          You will choose your own name from the roster and draw once — no sign-in
+          required.
         </p>
       </div>
 
       <div className="card mt-8 p-6 sm:p-8">
         <ActionForm
           action={lookupCodeAction}
-          submitLabel="Find my exchange"
-          pendingLabel="Looking…"
+          submitLabel="Open draw link"
+          pendingLabel="Opening…"
           className="space-y-5"
         >
           <div>
@@ -63,8 +61,8 @@ async function JoinContent({
               className="field font-mono uppercase tracking-[0.2em]"
             />
             <p className="mt-2 text-xs text-muted">
-              Codes are not case-sensitive. Ask your host if you do not have
-              one.
+              Codes are not case-sensitive. Ask your host for the shared public
+              link if you do not have one.
             </p>
           </div>
 
@@ -72,18 +70,18 @@ async function JoinContent({
             <strong className="font-semibold text-pine-950">
               What happens next:
             </strong>{" "}
-            you will see the event details and the full roster. Pick your own
-            name once — it becomes yours and disappears for everyone else. Then
-            tap Draw right away; you do not have to wait for anyone else.
+            open the public link, select your own name (e.g. Juan, Pedro, Gio),
+            and draw once. Your recipient is shown only once — take a screenshot
+            or write it down. No one, including the organizer, can see it again.
           </div>
         </ActionForm>
       </div>
 
       <div className="mt-6 grid gap-3 sm:grid-cols-3">
         {[
-          ["Preview first", "See the date, budget, host, and roster before you claim."],
-          ["One click", "Google sign-in means no passwords to remember."],
-          ["Kept private", "Only you see who you are buying for."],
+          ["No sign-in required", "Anyone with the shared public link can draw by choosing their name."],
+          ["Draw once", "Each name can be drawn only once to keep it fair."],
+          ["Shown once only", "Save your result immediately. It cannot be viewed again."],
         ].map(([title, body]) => (
           <div key={title} className="card-muted px-4 py-4">
             <p className="text-sm font-semibold text-pine-950">{title}</p>
