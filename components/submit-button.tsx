@@ -6,14 +6,21 @@ export function SubmitButton({
   label,
   pendingLabel,
   className = "btn btn-primary",
+  disabled = false,
 }: {
   label: string;
   pendingLabel?: string;
   className?: string;
+  disabled?: boolean;
 }) {
   const { pending } = useFormStatus();
   return (
-    <button type="submit" className={className} disabled={pending}>
+    <button
+      type="submit"
+      className={className}
+      disabled={pending || disabled}
+      aria-disabled={pending || disabled}
+    >
       {pending ? (pendingLabel ?? "Working…") : label}
     </button>
   );

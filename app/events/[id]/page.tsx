@@ -2,12 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { ActionForm } from "@/components/action-form";
 import { Avatar } from "@/components/avatar";
 import { CopyButton } from "@/components/copy-button";
 import { EmptyState } from "@/components/empty-state";
 import { StatusChip } from "@/components/status-chip";
-import { drawNamesAction } from "@/lib/actions/events";
 import { requireProfile } from "@/lib/auth";
 import {
   getEventForMember,
@@ -56,7 +54,6 @@ async function EventContent({
   const wishlistReady = wishlistStatus.filter(
     (row) => row.is_published && row.item_count > 0,
   ).length;
-  const isDrawn = event.status === "drawn" || event.status === "completed";
   const joinUrl = `${getSiteUrl()}/join/${event.invite_code}`;
   const justClaimed = query.claimed === "1";
 
@@ -64,8 +61,8 @@ async function EventContent({
     <div className="container-page py-10 lg:py-14">
       {justClaimed ? (
         <div className="mb-6 rounded-2xl border border-pine-600/20 bg-pine-100/70 px-4 py-3 text-sm font-medium text-pine-900">
-          You claimed your name! Add a wishlist item or two so your Secret Santa
-          knows what you love.
+          You are in as {member?.display_name ?? "a participant"}. Add a wishlist
+          item or two so your Secret Santa knows what you love.
         </div>
       ) : null}
 
@@ -155,26 +152,24 @@ async function EventContent({
               <p className="text-[0.62rem] font-bold uppercase tracking-[0.2em] text-gold-400">
                 Your Secret Santa
               </p>
-              {isDrawn ? (
+              {assignment ? (
                 <>
                   <h2 className="mt-1 font-display text-2xl">
-                    {assignment
-                      ? `${assignment.recipient_name} is yours to spoil.`
-                      : "The draw is complete."}
+                    {assignment.revealed
+                      ? "Your draw has been revealed once."
+                      : "Your recipient is ready to reveal once."}
                   </h2>
                   <p className="mt-1 text-sm text-cream-200/80">
-                    {assignment
-                      ? "Only you can see this. Open your private assignment to view their wishlist."
-                      : member
-                        ? "This name was not part of the final draw."
-                        : "You are not part of this draw, so there is no assignment for you."}
+                    {assignment.revealed
+                      ? "For privacy, the name you drew was shown only once and cannot be displayed again — not even to the organizer. Use the screenshot or note you saved."
+                      : "Reveal now to see who you are buying for. The result is shown only once, so save it immediately."}
                   </p>
-                  {assignment ? (
+                  {!assignment.revealed ? (
                     <Link
                       href={`/events/${id}/draw`}
                       className="btn btn-primary btn-sm mt-4"
                     >
-                      Reveal my recipient
+                      Reveal my recipient once
                     </Link>
                   ) : null}
                 </>
@@ -182,34 +177,30 @@ async function EventContent({
                 <>
                   <h2 className="mt-1 font-display text-2xl">
                     {member
-                      ? `${member.display_name.split(" ")[0]}, you are in!`
-                      : "The roster is taking shape."}
+                      ? `${member.display_name.split(" ")[0]}, draw once to get your name.`
+                      : "Draw from the shared public link."}
                   </h2>
                   <p className="mt-1 text-sm text-cream-200/80">
                     {member
-                      ? "Everyone is already on the roster, so you can draw your recipient right now — no need to wait for the others to join."
-                      : "The organizer will draw names when the roster is ready. Ask them to include you if you expected to take part."}
+                      ? "Use the shared public link to choose your name and draw once. Your recipient is shown only once and cannot be viewed again."
+                      : "Open the shared public link, choose your own name from the roster, and draw once. No sign-in is required."}
                   </p>
-                  {member ? (
-                    <div className="mt-4 flex flex-wrap items-center gap-2">
-                      <ActionForm
-                        action={drawNamesAction}
-                        submitLabel="Draw my name now"
-                        pendingLabel="Drawing…"
-                        className="flex flex-wrap items-center gap-2"
-                        buttonClassName="btn btn-primary btn-sm"
-                        confirm="Draw the names now? Everyone's assignment becomes final until the organizer resets the draw."
-                      >
-                        <input type="hidden" name="event_id" value={id} />
-                      </ActionForm>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <Link
+                      href={`/join/${event.invite_code}`}
+                      className="btn btn-primary btn-sm"
+                    >
+                      Open public draw link
+                    </Link>
+                    {member ? (
                       <Link
                         href={`/events/${id}/wishlist`}
                         className="btn btn-sm bg-cream-50 text-pine-950 hover:bg-cream-100"
                       >
                         Work on my wishlist
                       </Link>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </>
               )}
             </div>
@@ -240,14 +231,25 @@ async function EventContent({
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
                 <p className="text-sm text-muted">
-                  You are organizing this exchange without taking part.
+                  {isOrganizer
+                    ? "You are organizing this exchange without taking part."
+                    : "Use the shared public link to choose your name and draw once."}
                 </p>
-                <Link
-                  href={`/events/${id}/manage`}
-                  className="text-sm font-semibold text-pine-700 hover:text-holly-600"
-                >
-                  Manage the roster →
-                </Link>
+                {isOrganizer ? (
+                  <Link
+                    href={`/events/${id}/manage`}
+                    className="text-sm font-semibold text-pine-700 hover:text-holly-600"
+                  >
+                    Manage the roster →
+                  </Link>
+                ) : (
+                  <Link
+                    href={`/join/${event.invite_code}`}
+                    className="text-sm font-semibold text-pine-700 hover:text-holly-600"
+                  >
+                    Open public draw link →
+                  </Link>
+                )}
               </div>
             )}
           </section>
@@ -303,7 +305,7 @@ async function EventContent({
                             ? "Organizer"
                             : row.user_id
                               ? "Name claimed"
-                              : "Waiting to be claimed"}
+                              : "On the roster"}
                         </p>
                       </div>
                       {isOrganizer ? (
@@ -326,7 +328,7 @@ async function EventContent({
                         </span>
                       ) : (
                         <span className="chip bg-cream-100 text-muted">
-                          {row.user_id ? "In the draw" : "Unclaimed"}
+                          {row.user_id ? "Claimed" : "On the roster"}
                         </span>
                       )}
                     </li>
@@ -347,16 +349,16 @@ async function EventContent({
           {isOrganizer ? (
             <section className="card p-6">
               <h2 className="text-xl font-semibold text-pine-950">
-                Invite your guests
+                Share the public draw link
               </h2>
               <p className="mt-1 text-sm text-muted">
-                Share this link so guests can preview the exchange and claim
-                their own name. Personal reveal links for each name live in the
-                organizer tools.
+                This is the only link guests need. Each person opens it, chooses
+                their own name, and draws once. The result is shown only once and
+                is never visible to the organizer.
               </p>
               <div className="mt-4 rounded-xl border border-cream-200 bg-cream-50 px-4 py-3">
                 <p className="text-[0.62rem] font-bold uppercase tracking-[0.14em] text-muted">
-                  Invitation link
+                  Public draw link
                 </p>
                 <p className="mt-1 break-all font-mono text-sm text-pine-900">
                   {joinUrl}
@@ -369,10 +371,10 @@ async function EventContent({
                     copiedLabel="Code copied!"
                   />
                   <a
-                    href={`mailto:?subject=${encodeURIComponent(`You're invited to ${event.name}`)}&body=${encodeURIComponent(`Claim your name in our Christmas gift exchange: ${joinUrl}\n\nInvitation code: ${event.invite_code}`)}`}
+                    href={`mailto:?subject=${encodeURIComponent(`Draw your name for ${event.name}`)}&body=${encodeURIComponent(`Open this shared link, choose your own name, and draw once to see who you are buying for: ${joinUrl}\n\nThe result is shown only once, so please take a screenshot or write it down.\n\nCode: ${event.invite_code}`)}`}
                     className="btn btn-secondary btn-sm"
                   >
-                    Email invite
+                    Email link
                   </a>
                 </div>
               </div>
@@ -410,16 +412,16 @@ async function EventContent({
             </p>
             <ul className="mt-3 space-y-2 text-sm text-muted">
               <li className="flex gap-2">
-                <span className="text-pine-700">•</span> Every name on the
-                roster is included in the draw.
+                <span className="text-pine-700">•</span> Everyone uses the same
+                shared public link.
               </li>
               <li className="flex gap-2">
-                <span className="text-pine-700">•</span> Nobody draws their own
-                name.
+                <span className="text-pine-700">•</span> Each person chooses
+                their own name and draws once.
               </li>
               <li className="flex gap-2">
-                <span className="text-pine-700">•</span> Assignments stay private
-                — including from the organizer.
+                <span className="text-pine-700">•</span> The result is shown only
+                once and never visible to the organizer.
               </li>
             </ul>
           </div>
@@ -454,11 +456,11 @@ async function EventContent({
           ) : (
             <div className="rounded-2xl bg-cream-100 p-5">
               <p className="text-[0.62rem] font-bold uppercase tracking-[0.18em] text-muted">
-                Keep it under wraps
+                One-time reveal
               </p>
               <p className="mt-2 text-sm leading-relaxed text-muted">
-                Your recipient cannot see that you are their Secret Santa. Keep
-                the surprise until the party.
+                When you draw, take a screenshot or write down the name. For
+                privacy, it will not be shown again.
               </p>
             </div>
           )}

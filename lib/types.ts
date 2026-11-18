@@ -61,20 +61,34 @@ export type PreviewMember = {
   id: string;
   name: string;
   claimed: boolean;
+  drawn: boolean;
 };
 
-/** The signed-in giver's own assignment, as returned by `my_assignment`. */
+/** Signed-in assignment state (recipient details are never exposed after reveal). */
 export type AssignmentRecord = {
   assignment_id: string;
-  recipient_member_id: string;
+  event_drawn: boolean;
+  revealed: boolean;
+};
+
+/** One-time reveal payload returned only at the moment of draw/reveal. */
+export type DrawRevealResult = {
+  event_id: string;
+  event_name: string;
+  member_id: string;
+  member_name: string;
   recipient_name: string;
   recipient_user_id: string | null;
   recipient_avatar_url: string | null;
   wishlist_published: boolean;
-  wishlist_item_count: number;
+  wishlist_items: WishlistItem[];
+  gift_budget: number | null;
+  currency: string;
+  wishlist_deadline: string | null;
+  event_status: EventStatus;
 };
 
-/** What an anonymous personal-link holder can see. */
+/** Legacy personal-link view (safe: never contains recipient secrets). */
 export type MemberView = {
   event_id: string;
   event_name: string;
@@ -89,6 +103,7 @@ export type MemberView = {
   member_name: string;
   claimed: boolean;
   drawn: boolean;
+  revealed: boolean;
   recipient_member_id: string | null;
   recipient_name: string | null;
   recipient_user_id: string | null;
@@ -161,4 +176,5 @@ export type WishlistStatusRow = {
 export type ActionState = {
   error?: string;
   success?: string;
+  reveal?: DrawRevealResult;
 } | null;

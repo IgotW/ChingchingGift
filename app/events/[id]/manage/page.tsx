@@ -24,7 +24,6 @@ import {
   getEventAudit,
   getEventExclusions,
   getEventMembers,
-  getMemberTokens,
   getWishlistStatus,
 } from "@/lib/data";
 import {
@@ -68,10 +67,9 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
   const event = await getEvent(id);
   if (!event || event.organizer_id !== session.user.id) notFound();
 
-  const [members, wishlistStatus, tokens, audit, exclusions] = await Promise.all([
+  const [members, wishlistStatus, audit, exclusions] = await Promise.all([
     getEventMembers(id),
     getWishlistStatus(id),
-    getMemberTokens(id),
     getEventAudit(id),
     getEventExclusions(id),
   ]);
@@ -194,8 +192,8 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
                 {isCompleted
                   ? `Completed ${formatDateTime(event.completed_at)}. The history and assignments remain preserved for everyone.`
                   : event.status === "drawn"
-                    ? `Drawn ${formatDateTime(event.drawn_at)}. Each name can now privately reveal one unique recipient. Personal links keep working without sign-in.`
-                    : "The roster is complete, so guests can start the draw the moment they claim their name. You can start it now too — every name on the roster is included, claimed or not."}
+                    ? `Drawn ${formatDateTime(event.drawn_at)}. Share the public link so each person can choose their name and reveal their recipient once. Results are shown once and never visible to the organizer.`
+                    : "Share the public link so each person can choose their own name and draw once. The draw is generated on the first reveal; you can also start it now if you prefer."}
               </p>
             </div>
 
@@ -255,9 +253,9 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
                     </p>
                   )}
                   <p className="text-xs leading-relaxed text-muted">
-                    Unclaimed names are still included. For guests who do not use
-                    Google, copy their private link below — they open it and tap
-                    one Draw button, with no sign-in.
+                    Share one public link with everyone. Each person chooses their
+                    own name and draws once — no sign-in required. Names not drawn
+                    yet remain available on the roster.
                   </p>
                 </div>
               ) : null}
@@ -290,10 +288,9 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
                       Reset the draw (emergency only)
                     </summary>
                     <p className="mt-2 text-xs leading-relaxed text-muted">
-                      This permanently deletes every assignment and the
-                      notification that announced them, then reopens the roster
-                      for editing. Everyone keeps their claimed name and personal
-                      link. Type the event name exactly to confirm.
+                      This permanently deletes every assignment and draw/reveal
+                      state, then reopens the roster for editing. Claimed names
+                      are kept. Type the event name exactly to confirm.
                     </p>
                     <ActionForm
                       action={resetDrawAction}
@@ -378,10 +375,6 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
                   const wishlist = wishlistMap.get(row.id);
                   const wishlistReadyFor =
                     wishlist?.is_published && wishlist.item_count > 0;
-                  const token = tokens.get(row.id);
-                  const personalUrl = token
-                    ? `${getSiteUrl()}/claim/${token}`
-                    : null;
 
                   return (
                     <li key={row.id} className="space-y-3 py-4">
@@ -441,76 +434,58 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        {personalUrl ? (
-                          <>
-                            <CopyButton
-                              value={personalUrl}
-                              label="Copy private link"
-                              copiedLabel="Private link copied!"
-                              className="btn btn-secondary btn-sm"
+                      {!isLocked ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <details className="rounded-lg border border-cream-200 px-3 py-1.5">
+                            <summary className="cursor-pointer text-xs font-semibold text-muted hover:text-pine-800">
+                              Rename
+                            </summary>
+                            <div className="mt-3">
+                              <ActionForm
+                                action={renameMemberAction}
+                                submitLabel="Save name"
+                                pendingLabel="Saving…"
+                                className="flex flex-wrap items-end gap-2"
+                                buttonClassName="btn btn-secondary btn-sm"
+                              >
+                                <input
+                                  type="hidden"
+                                  name="event_id"
+                                  value={id}
+                                />
+                                <input
+                                  type="hidden"
+                                  name="member_id"
+                                  value={row.id}
+                                />
+                                <input
+                                  name="display_name"
+                                  required
+                                  maxLength={80}
+                                  defaultValue={row.display_name}
+                                  aria-label={`Rename ${row.display_name}`}
+                                  className="field w-44"
+                                />
+                              </ActionForm>
+                            </div>
+                          </details>
+                          <ActionForm
+                            action={removeMemberAction}
+                            submitLabel="Remove"
+                            pendingLabel="Removing…"
+                            className="flex items-center"
+                            buttonClassName={DANGER_BUTTON}
+                            confirm={`Remove ${row.display_name} from the roster?`}
+                          >
+                            <input type="hidden" name="event_id" value={id} />
+                            <input
+                              type="hidden"
+                              name="member_id"
+                              value={row.id}
                             />
-                            <CopyButton
-                              value={`Hi ${row.display_name}! You are in the ${event.name} gift exchange. Open this private link and tap "Draw my name now" to see who you are buying for: ${personalUrl}`}
-                              label="Copy friendly message"
-                              copiedLabel="Message copied!"
-                              className="btn btn-ghost btn-sm"
-                            />
-                          </>
-                        ) : null}
-                        {!isLocked ? (
-                          <>
-                            <details className="rounded-lg border border-cream-200 px-3 py-1.5">
-                              <summary className="cursor-pointer text-xs font-semibold text-muted hover:text-pine-800">
-                                Rename
-                              </summary>
-                              <div className="mt-3">
-                                <ActionForm
-                                  action={renameMemberAction}
-                                  submitLabel="Save name"
-                                  pendingLabel="Saving…"
-                                  className="flex flex-wrap items-end gap-2"
-                                  buttonClassName="btn btn-secondary btn-sm"
-                                >
-                                  <input
-                                    type="hidden"
-                                    name="event_id"
-                                    value={id}
-                                  />
-                                  <input
-                                    type="hidden"
-                                    name="member_id"
-                                    value={row.id}
-                                  />
-                                  <input
-                                    name="display_name"
-                                    required
-                                    maxLength={80}
-                                    defaultValue={row.display_name}
-                                    aria-label={`Rename ${row.display_name}`}
-                                    className="field w-44"
-                                  />
-                                </ActionForm>
-                              </div>
-                            </details>
-                            <ActionForm
-                              action={removeMemberAction}
-                              submitLabel="Remove"
-                              pendingLabel="Removing…"
-                              className="flex items-center"
-                              buttonClassName={DANGER_BUTTON}
-                              confirm={`Remove ${row.display_name} from the roster? This also disables their personal link.`}
-                            >
-                              <input type="hidden" name="event_id" value={id} />
-                              <input
-                                type="hidden"
-                                name="member_id"
-                                value={row.id}
-                              />
-                            </ActionForm>
-                          </>
-                        ) : null}
-                      </div>
+                          </ActionForm>
+                        </div>
+                      ) : null}
                     </li>
                   );
                 })}
@@ -522,10 +497,10 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
             )}
 
             <p className="mt-4 text-xs leading-relaxed text-muted">
-              Personal links are private and need no sign-in: anyone holding one
-              can start the draw and see that member&rsquo;s recipient. Claims and
-              personal links survive a draw reset; roster edits are locked once
-              names are drawn.
+              Share the one public draw link with everyone. Each person chooses
+              their own name and draws once; the result is shown only once and is
+              never visible to the organizer. Roster edits are locked once names
+              are drawn.
             </p>
           </section>
 
@@ -693,7 +668,8 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
             <p className="mt-1 text-sm text-muted">
               Everyone who claimed a name receives an in-app notification. Use
               this for reminders, venue details, or a cheerful nudge about
-              wishlists. Guests using personal links will not receive it.
+              wishlists. Guests who only used the public draw link without
+              signing in will not receive it.
             </p>
             <div className="mt-5">
               <ActionForm
@@ -883,16 +859,16 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
         <aside className="space-y-5">
           <section id="invite" className="card p-5">
             <h2 className="text-base font-semibold text-pine-950">
-              Invitation
+              Public draw link
             </h2>
             <p className="mt-1 text-xs leading-relaxed text-muted">
-              Share this link so guests can preview the roster and claim their
-              own name. No Google sign-in? Send the person&rsquo;s private link
-              from the roster below — they just open it and tap Draw.
+              Share this one link with everyone. Each person opens it, chooses
+              their own name, and draws once — no sign-in required. The result is
+              shown only once and is never visible to the organizer.
             </p>
             <div className="mt-3 rounded-xl border border-cream-200 bg-cream-50 px-3.5 py-3">
               <p className="text-[0.58rem] font-bold uppercase tracking-[0.14em] text-muted">
-                Invitation link
+                Shared public link
               </p>
               <p className="mt-1 break-all font-mono text-xs text-pine-900">
                 {joinUrl}
@@ -944,17 +920,16 @@ async function ManageContent({ params }: { params: Promise<{ id: string }> }) {
                 progress, never who drew whom.
               </li>
               <li className="flex gap-2">
-                <span className="text-pine-700">•</span> The draw includes every
-                name on the roster, claimed or not.
+                <span className="text-pine-700">•</span> Share only the one public
+                link; each person chooses their own name and draws once.
               </li>
               <li className="flex gap-2">
                 <span className="text-pine-700">•</span> Roster edits are locked
                 after the draw; reset to edit again.
               </li>
               <li className="flex gap-2">
-                <span className="text-pine-700">•</span> Personal links need no
-                sign-in and include a Draw button, so less tech-savvy guests can
-                join in one tap.
+                <span className="text-pine-700">•</span> Reveal results are shown
+                once and never visible to the organizer (sign-in is optional).
               </li>
             </ul>
           </section>

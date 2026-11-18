@@ -122,25 +122,26 @@ function EventCard({ event }: { event: DashboardEvent }) {
             Manage
           </Link>
         ) : null}
-        {event.my_member_name &&
-        event.status !== "drawn" &&
-        event.status !== "completed" ? (
-          <Link
-            href={`/events/${event.id}/draw`}
-            className="btn btn-primary btn-sm"
-          >
-            Draw now
-          </Link>
-        ) : null}
-        {event.status === "drawn" || event.status === "completed" ? (
-          event.has_assignment ? (
+        {event.has_assignment ? (
+          event.my_revealed ? (
+            <span className="chip bg-pine-100 text-pine-800">
+              Drawn (saved once)
+            </span>
+          ) : (
             <Link
               href={`/events/${event.id}/draw`}
               className="btn btn-primary btn-sm"
             >
-              {event.status === "completed" ? "See your recipient" : "Reveal recipient"}
+              Reveal once
             </Link>
-          ) : null
+          )
+        ) : event.my_member_name || !event.is_organizer ? (
+          <Link
+            href={`/join/${event.invite_code}`}
+            className="btn btn-primary btn-sm"
+          >
+            Draw my name
+          </Link>
         ) : null}
         {event.my_member_name ? (
           <Link
@@ -151,7 +152,11 @@ function EventCard({ event }: { event: DashboardEvent }) {
           </Link>
         ) : null}
       </div>
-      <p className="mt-3 pl-1 text-xs text-muted">{meta.description}</p>
+      <p className="mt-3 pl-1 text-xs text-muted">
+        {event.has_assignment && event.my_revealed
+          ? "You already revealed your recipient once. For privacy it cannot be shown again."
+          : meta.description}
+      </p>
     </article>
   );
 }
@@ -167,7 +172,7 @@ async function DashboardContent() {
   const active = events.filter((event) => event.status !== "completed");
   const completed = events.filter((event) => event.status === "completed");
   const toPlan = events.filter(
-    (event) => event.has_assignment && event.status !== "completed",
+    (event) => event.has_assignment && !event.my_revealed && event.status !== "completed",
   ).length;
   const wishlistsLeft = active.filter(
     (event) => event.my_member_name && !event.my_wishlist_published,
@@ -202,7 +207,7 @@ async function DashboardContent() {
         {[
           { label: "Active exchanges", value: active.length, hint: `${organizing} organized by you` },
           { label: "Wishlists to finish", value: wishlistsLeft, hint: "Publish before the deadline" },
-          { label: "Gifts to plan", value: toPlan, hint: "Recipient revealed" },
+          { label: "Gifts to plan", value: toPlan, hint: "Reveal once to see recipient" },
           { label: "Unread updates", value: notifications.filter((n) => !n.read_at).length, hint: "Notifications" },
         ].map((stat) => (
           <div key={stat.label} className="card px-5 py-4">
@@ -273,8 +278,7 @@ async function DashboardContent() {
               Find an exchange
             </h2>
             <p className="mt-1 text-xs leading-relaxed text-muted">
-              Enter the code from your host, then claim your name from the
-              roster.
+              Enter the code from your host to open the shared public draw link.
             </p>
             <ActionForm
               action={lookupCodeAction}
@@ -342,11 +346,11 @@ async function DashboardContent() {
 
           <div className="rounded-2xl bg-pine-950 p-5 text-cream-50">
             <p className="text-[0.62rem] font-bold uppercase tracking-[0.18em] text-gold-400">
-              Keep the secret
+              One-time reveal
             </p>
             <p className="mt-2 text-sm leading-relaxed text-cream-200/90">
-              Your assignment is private to you. Even the organizer cannot see
-              the full draw — that is what makes the reveal fun.
+              Each person draws once and sees their recipient only once. Save a
+              screenshot or note — even the organizer cannot see who you drew.
             </p>
           </div>
         </aside>

@@ -43,12 +43,14 @@ end $$;
 drop table if exists public.event_participants cascade;
 drop function if exists public.join_event(text);
 
--- Return shapes changed in the roster model, so these must be recreated.
+-- Return shapes changed across roster/security model updates, so recreate.
 drop function if exists public.preview_event(text);
 drop function if exists public.event_wishlist_status(uuid);
 drop function if exists public.my_assignment(uuid);
 drop function if exists public.member_view(text);
 drop function if exists public.claim_member(uuid);
+drop function if exists public.draw_and_reveal(text, uuid);
+drop function if exists public.reveal_my_assignment(uuid);
 
 -- ---------------------------------------------------------------------------
 -- Tables
@@ -116,11 +118,15 @@ create table if not exists public.assignments (
   event_id uuid not null references public.events (id) on delete cascade,
   giver_member_id uuid not null references public.event_members (id) on delete cascade,
   recipient_member_id uuid not null references public.event_members (id) on delete cascade,
+  revealed_at timestamptz,
   created_at timestamptz not null default now(),
   constraint assignments_no_self check (giver_member_id <> recipient_member_id),
   constraint assignments_one_gift_per_giver unique (event_id, giver_member_id),
   constraint assignments_one_recipient_per_giver unique (event_id, recipient_member_id)
 );
+
+alter table public.assignments
+  add column if not exists revealed_at timestamptz;
 
 create table if not exists public.wishlists (
   id uuid primary key default gen_random_uuid(),
@@ -502,7 +508,8 @@ create policy "organizers read the audit trail"
 
 -- ---------------------------------------------------------------------------
 -- Preview an event from its invitation code (works before signing in).
--- Returns the roster so guests can pick their own name.
+-- Returns the roster for the public one-time draw flow. "drawn" means that
+-- member has already used their single reveal and can never see it again.
 -- ---------------------------------------------------------------------------
 create function public.preview_event(p_code text)
 returns table (
@@ -540,11 +547,14 @@ as $$
           jsonb_build_object(
             'id', m.id,
             'name', m.display_name,
-            'claimed', m.user_id is not null
+            'claimed', m.user_id is not null,
+            'drawn', a.revealed_at is not null
           )
           order by m.created_at, m.display_name
         )
         from public.event_members m
+        left join public.assignments a
+          on a.event_id = m.event_id and a.giver_member_id = m.id
         where m.event_id = e.id
       ),
       '[]'::jsonb
@@ -1232,17 +1242,14 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- The signed-in giver's own assignment, with recipient wishlist metadata.
+-- The signed-in giver's own assignment state. Recipient identity is never
+-- returned here: one-time reveals happen only via reveal RPCs.
 -- ---------------------------------------------------------------------------
 create function public.my_assignment(p_event_id uuid)
 returns table (
   assignment_id uuid,
-  recipient_member_id uuid,
-  recipient_name text,
-  recipient_user_id uuid,
-  recipient_avatar_url text,
-  wishlist_published boolean,
-  wishlist_item_count bigint
+  event_drawn boolean,
+  revealed boolean
 )
 language sql
 stable
@@ -1251,27 +1258,18 @@ set search_path = public
 as $$
   select
     a.id,
-    recipient.id,
-    recipient.display_name,
-    recipient.user_id,
-    p.avatar_url,
-    coalesce(w.is_published, false),
-    coalesce((select count(*) from public.wishlist_items wi where wi.wishlist_id = w.id), 0)
+    true as event_drawn,
+    (a.revealed_at is not null) as revealed
   from public.assignments a
   join public.event_members giver on giver.id = a.giver_member_id
-  join public.event_members recipient on recipient.id = a.recipient_member_id
-  left join public.profiles p on p.id = recipient.user_id
-  left join public.wishlists w
-    on w.event_id = a.event_id and w.user_id = recipient.user_id
   where a.event_id = p_event_id
     and giver.user_id = auth.uid()
   limit 1;
 $$;
 
 -- ---------------------------------------------------------------------------
--- Anonymous personal-link view. The secret token is the only credential.
--- Returns the event summary, the member it belongs to, and — once drawn — that
--- member's recipient plus the recipient's wishlist. Never any other assignment.
+-- Legacy personal-link view. Kept safe: never returns recipient identity or
+-- wishlist contents because reveals are one-time in the public draw flow.
 -- ---------------------------------------------------------------------------
 create function public.member_view(p_token text)
 returns table (
@@ -1288,6 +1286,7 @@ returns table (
   member_name text,
   claimed boolean,
   drawn boolean,
+  revealed boolean,
   recipient_member_id uuid,
   recipient_name text,
   recipient_user_id uuid,
@@ -1313,15 +1312,125 @@ as $$
     m.id,
     m.display_name,
     (m.user_id is not null),
-    exists (select 1 from public.assignments a where a.event_id = e.id),
-    recipient.id,
-    recipient.display_name,
-    recipient.user_id,
-    recipient_profile.avatar_url,
-    coalesce(w.is_published, false),
-    coalesce(
-      (
-        select jsonb_agg(
+    exists (select 1 from public.assignments ax where ax.event_id = e.id),
+    (a.revealed_at is not null),
+    null::uuid,
+    null::text,
+    null::uuid,
+    null::text,
+    false,
+    '[]'::jsonb
+  from public.event_member_tokens t
+  join public.event_members m on m.id = t.member_id
+  join public.events e on e.id = t.event_id
+  left join public.profiles org on org.id = e.organizer_id
+  left join public.assignments a
+    on a.event_id = e.id and a.giver_member_id = m.id
+  where t.token = trim(p_token)
+  limit 1;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- One-time public draw + reveal. Anyone with the event code may pick a roster
+-- name and reveal that member's recipient exactly once. The global draw is
+-- generated on first use. Recipient details are returned only in this call.
+-- ---------------------------------------------------------------------------
+create function public.draw_and_reveal(p_code text, p_member_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_event public.events;
+  v_member public.event_members;
+  v_assignment public.assignments;
+  v_recipient_name text;
+  v_recipient_user_id uuid;
+  v_recipient_avatar text;
+  v_wishlist_id uuid;
+  v_wishlist_published boolean := false;
+  v_items jsonb := '[]'::jsonb;
+  v_uid uuid := auth.uid();
+begin
+  select * into v_event
+  from public.events
+  where upper(invite_code) = upper(trim(p_code))
+  for update;
+
+  if not found then
+    raise exception 'This invitation link is not valid.';
+  end if;
+
+  select * into v_member
+  from public.event_members
+  where id = p_member_id and event_id = v_event.id;
+
+  if not found then
+    raise exception 'That name is not on this exchange roster.';
+  end if;
+
+  if v_event.status <> 'drawn' or not exists (
+    select 1 from public.assignments where event_id = v_event.id
+  ) then
+    if v_event.status = 'completed' then
+      raise exception 'This exchange is complete and no draw is available.';
+    end if;
+    perform public.perform_event_draw(v_event.id);
+    select * into v_event from public.events where id = v_event.id;
+  end if;
+
+  select * into v_assignment
+  from public.assignments
+  where event_id = v_event.id and giver_member_id = v_member.id
+  for update;
+
+  if not found then
+    raise exception 'No assignment was found for this name. Ask the organizer to check the roster.';
+  end if;
+
+  if v_assignment.revealed_at is not null then
+    raise exception 'This name has already been drawn. For privacy, the result was shown once and cannot be shown again.';
+  end if;
+
+  update public.assignments
+  set revealed_at = now()
+  where id = v_assignment.id and revealed_at is null;
+
+  if not found then
+    raise exception 'This name has already been drawn. For privacy, the result was shown once and cannot be shown again.';
+  end if;
+
+  -- If the viewer is signed in and this roster slot is unclaimed, link it to
+  -- their account so wishlist/notification features can work.
+  if v_uid is not null and v_member.user_id is null then
+    if not exists (
+      select 1 from public.event_members
+      where event_id = v_event.id and user_id = v_uid and id <> v_member.id
+    ) then
+      update public.event_members
+      set user_id = v_uid,
+          claimed_at = coalesce(claimed_at, now())
+      where id = v_member.id and user_id is null;
+      select * into v_member from public.event_members where id = v_member.id;
+    end if;
+  end if;
+
+  select r.display_name, r.user_id, p.avatar_url
+    into v_recipient_name, v_recipient_user_id, v_recipient_avatar
+  from public.event_members r
+  left join public.profiles p on p.id = r.user_id
+  where r.id = v_assignment.recipient_member_id;
+
+  if v_recipient_user_id is not null then
+    select w.id, w.is_published
+      into v_wishlist_id, v_wishlist_published
+    from public.wishlists w
+    where w.event_id = v_event.id and w.user_id = v_recipient_user_id;
+
+    if v_wishlist_id is not null then
+      select coalesce(
+        jsonb_agg(
           jsonb_build_object(
             'id', wi.id,
             'wishlist_id', wi.wishlist_id,
@@ -1337,24 +1446,66 @@ as $$
             'updated_at', wi.updated_at
           )
           order by wi.priority, wi.created_at
-        )
-        from public.wishlist_items wi
-        where wi.wishlist_id = w.id
-      ),
-      '[]'::jsonb
-    )
-  from public.event_member_tokens t
-  join public.event_members m on m.id = t.member_id
-  join public.events e on e.id = t.event_id
-  left join public.profiles org on org.id = e.organizer_id
-  left join public.assignments a
-    on a.event_id = e.id and a.giver_member_id = m.id
-  left join public.event_members recipient on recipient.id = a.recipient_member_id
-  left join public.profiles recipient_profile on recipient_profile.id = recipient.user_id
-  left join public.wishlists w
-    on w.event_id = e.id and w.user_id = recipient.user_id
-  where t.token = trim(p_token)
-  limit 1;
+        ),
+        '[]'::jsonb
+      ) into v_items
+      from public.wishlist_items wi
+      where wi.wishlist_id = v_wishlist_id;
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'event_id', v_event.id,
+    'event_name', v_event.name,
+    'member_id', v_member.id,
+    'member_name', v_member.display_name,
+    'recipient_name', v_recipient_name,
+    'recipient_user_id', v_recipient_user_id,
+    'recipient_avatar_url', v_recipient_avatar,
+    'wishlist_published', coalesce(v_wishlist_published, false),
+    'wishlist_items', coalesce(v_items, '[]'::jsonb),
+    'gift_budget', v_event.gift_budget,
+    'currency', v_event.currency,
+    'wishlist_deadline', v_event.wishlist_deadline,
+    'event_status', v_event.status
+  );
+end;
+$$;
+
+-- Signed-in one-time reveal for the caller's own roster membership.
+create function public.reveal_my_assignment(p_event_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_member_id uuid;
+  v_code text;
+begin
+  if v_uid is null then
+    raise exception 'Please sign in to continue.';
+  end if;
+
+  select m.id into v_member_id
+  from public.event_members m
+  where m.event_id = p_event_id and m.user_id = v_uid;
+
+  if v_member_id is null then
+    raise exception 'You are not part of this exchange.';
+  end if;
+
+  select e.invite_code into v_code
+  from public.events e
+  where e.id = p_event_id;
+
+  if v_code is null then
+    raise exception 'Event not found.';
+  end if;
+
+  return public.draw_and_reveal(v_code, v_member_id);
+end;
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -1366,6 +1517,8 @@ revoke all on function public.member_view(text) from public;
 revoke all on function public.my_assignment(uuid) from public;
 revoke all on function public.draw_event(uuid) from public;
 revoke all on function public.draw_by_token(text) from public;
+revoke all on function public.draw_and_reveal(text, uuid) from public;
+revoke all on function public.reveal_my_assignment(uuid) from public;
 revoke all on function public.perform_event_draw(uuid) from public, anon, authenticated;
 revoke all on function public.compute_draw_assignment(uuid[], text[]) from public, anon, authenticated;
 revoke all on function public.reset_draw(uuid, text) from public;
@@ -1384,6 +1537,8 @@ grant execute on function public.member_view(text) to anon, authenticated;
 grant execute on function public.my_assignment(uuid) to authenticated;
 grant execute on function public.draw_event(uuid) to authenticated;
 grant execute on function public.draw_by_token(text) to anon, authenticated;
+grant execute on function public.draw_and_reveal(text, uuid) to anon, authenticated;
+grant execute on function public.reveal_my_assignment(uuid) to authenticated;
 grant execute on function public.reset_draw(uuid, text) to authenticated;
 grant execute on function public.announce_event(uuid, text, text) to authenticated;
 grant execute on function public.notify_event_update(uuid, text) to authenticated;

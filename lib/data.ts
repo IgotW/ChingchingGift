@@ -18,7 +18,10 @@ export type DashboardEvent = EventWithOrganizer & {
   my_member_name: string | null;
   my_wishlist_published: boolean;
   my_wishlist_items: number;
+  /** The signed-in user has an assignment row in this event. */
   has_assignment: boolean;
+  /** The signed-in user has already used their one-time reveal. */
+  my_revealed: boolean;
   is_organizer: boolean;
 };
 
@@ -64,7 +67,10 @@ export async function getDashboardEvents(): Promise<DashboardEvent[]> {
       .select("event_id, is_published, item_count:wishlist_items(count)")
       .eq("user_id", user.id)
       .in("event_id", ids),
-    supabase.from("assignments").select("event_id").in("event_id", ids),
+    supabase
+      .from("assignments")
+      .select("event_id, revealed_at")
+      .in("event_id", ids),
   ]);
 
   const memberSet = new Set(
@@ -97,9 +103,13 @@ export async function getDashboardEvents(): Promise<DashboardEvent[]> {
     });
   }
 
-  const assignedEvents = new Set(
-    (assignments.data ?? []).map((row) => row.event_id as string),
-  );
+  const assignmentMap = new Map<string, { revealed: boolean }>();
+  for (const row of (assignments.data ?? []) as unknown as {
+    event_id: string;
+    revealed_at: string | null;
+  }[]) {
+    assignmentMap.set(row.event_id, { revealed: row.revealed_at != null });
+  }
 
   return (events as unknown as EventWithOrganizer[])
     .filter(
@@ -107,6 +117,7 @@ export async function getDashboardEvents(): Promise<DashboardEvent[]> {
     )
     .map((event) => {
       const wishlist = wishlistMap.get(event.id);
+      const assignment = assignmentMap.get(event.id);
       return {
         ...event,
         member_count: counts.get(event.id) ?? 0,
@@ -114,7 +125,8 @@ export async function getDashboardEvents(): Promise<DashboardEvent[]> {
         my_member_name: myNameMap.get(event.id) ?? null,
         my_wishlist_published: wishlist?.published ?? false,
         my_wishlist_items: wishlist?.items ?? 0,
-        has_assignment: assignedEvents.has(event.id),
+        has_assignment: Boolean(assignment),
+        my_revealed: assignment?.revealed ?? false,
         is_organizer: event.organizer_id === user.id,
       };
     });
@@ -173,21 +185,11 @@ export async function getEventExclusions(
   return (data as MemberExclusion[]) ?? [];
 }
 
-/** Organizer-only personal reveal links, keyed by roster member id. */
+/** @deprecated Per-member personal reveal links are no longer used. */
 export async function getMemberTokens(
-  eventId: string,
+  _eventId: string,
 ): Promise<Map<string, string>> {
-  const supabase = await createServerSupabase();
-  const { data } = await supabase
-    .from("event_member_tokens")
-    .select("member_id, token")
-    .eq("event_id", eventId);
-
-  const tokens = new Map<string, string>();
-  for (const row of data ?? []) {
-    tokens.set(row.member_id as string, row.token as string);
-  }
-  return tokens;
+  return new Map();
 }
 
 export async function getMyAssignment(

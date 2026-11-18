@@ -40,9 +40,9 @@ async function NewEventContent() {
           Create a Christmas exchange
         </h1>
         <p className="mt-3 max-w-xl text-muted">
-          List everyone joining now. Guests claim their own name from the list
-          and can draw straight away — the roster is already complete, so nobody
-          has to wait.
+          List everyone joining now, then share one public link. Each person
+          chooses their own name from the roster and draws once — no sign-in
+          required.
         </p>
       </div>
 
@@ -160,8 +160,8 @@ async function NewEventContent() {
               </h2>
               <p className="mt-1 text-sm leading-relaxed text-muted">
                 Every name here is included in the draw. Add one name per line —
-                first names are fine. Guests will claim their own name from this
-                list.
+                first names are fine. Guests will choose their own name from this
+                list on the shared public link.
               </p>
             </div>
 
@@ -231,17 +231,17 @@ async function NewEventContent() {
 
           <div className="rounded-xl border border-gold-500/25 bg-gold-100/50 px-4 py-3 text-sm leading-relaxed text-pine-900">
             <strong className="font-semibold">What happens next:</strong> you get
-            a shareable invitation link and a private link for every name on the
-            roster. Guests can claim their name with Google and draw immediately.
-            Guests who do not use Google just open their private link and tap one
-            Draw button — no sign-in at all.
+            one shared public link for the roster. Share it with everyone — each
+            person opens it, chooses their own name, and draws once. The result is
+            shown only once and is never visible to the organizer (sign-in is
+            optional).
           </div>
         </ActionForm>
       </div>
 
       <p className="mt-5 text-center text-xs text-muted">
-        Wishlists are for signed-in members. Guests who use a personal link can
-        still reveal their recipient and browse their wishlist.
+        Wishlists are for signed-in members. Drawing from the shared public link
+        works without signing in.
       </p>
     </div>
   );
